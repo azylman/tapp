@@ -43,6 +43,18 @@ func appHandler(handler appEngineHandler) http.HandlerFunc {
 	}
 }
 
+func validateCron(handler appEngineHandler) appEngineHandler {
+	return func(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+		isCron := r.Header.Get("X-Appengine-Cron")
+		if isCron != "true" {
+			log.Warningf(ctx, "unauthorized attempt to access cron /unretweet")
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return nil
+		}
+		return handler(ctx, w, r)
+	}
+}
+
 func init() {
 	// default pages
 	http.HandleFunc("/index.html", appHandler(indexHandler))
@@ -63,10 +75,10 @@ func init() {
 	http.HandleFunc("/tweets/search", appHandler(tweetsHandler))
 
 	// cron requests
-	http.HandleFunc("/fetch", appHandler(fetchTweetsHandler))
-	http.HandleFunc("/update/tweets", appHandler(updateTweetsHandler))
-	http.HandleFunc("/update/user", appHandler(updateUserHandler))
-	http.HandleFunc("/unretweet", appHandler(unretweetHanlder))
+	http.HandleFunc("/fetch", appHandler(validateCron(fetchTweetsHandler)))
+	http.HandleFunc("/update/tweets", appHandler(validateCron(updateTweetsHandler)))
+	http.HandleFunc("/update/user", appHandler(validateCron(updateUserHandler)))
+	http.HandleFunc("/unretweet", appHandler(validateCron(unretweetHanlder)))
 
 	// admin page requests
 	http.HandleFunc("/admin", appHandler(indexHandler))
@@ -423,114 +435,86 @@ func indexHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) e
 }
 
 func unretweetHanlder(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	isCron := r.Header.Get("X-Appengine-Cron")
+	twitterApi, myToken := LoadCredentials(true)
+	twitterApi.HttpClient.Transport = &urlfetch.Transport{Context: ctx}
+	tweets := []anaconda.Tweet{}
+	vals := url.Values{
+		"screen_name":     {myToken.ScreenName},
+		"count":           {"200"},
+		"trim_user":       {"1"},
+		"exclude_replies": {"1"},
+		"include_rts":     {"1"},
+	}
+	lastId := int64(0)
+	before := time.Now().Unix() - (DAYS_BEFORE_UNRETWEET * SECONDS_IN_DAY)
+	log.Infof(ctx, "unretweet tweets before: %v", time.Unix(before, 0))
 
-	if isCron == "true" {
-		twitterApi, myToken := LoadCredentials(true)
-		twitterApi.HttpClient.Transport = &urlfetch.Transport{Context: ctx}
-		tweets := []anaconda.Tweet{}
-		vals := url.Values{
-			"screen_name":     {myToken.ScreenName},
-			"count":           {"200"},
-			"trim_user":       {"1"},
-			"exclude_replies": {"1"},
-			"include_rts":     {"1"},
+	for {
+		idStr := fmt.Sprintf("%v", lastId-1)
+		if idStr == vals.Get("max_id") {
+			log.Warningf(ctx, "same last id: %v", idStr)
+			break
 		}
-		lastId := int64(0)
-		before := time.Now().Unix() - (DAYS_BEFORE_UNRETWEET * SECONDS_IN_DAY)
-		log.Infof(ctx, "unretweet tweets before: %v", time.Unix(before, 0))
+		if lastId != 0 {
+			vals.Set("max_id", idStr)
+		}
+		aTweets, err := twitterApi.GetUserTimeline(vals)
+		if err != nil {
+			return fmt.Errorf("Error getting tweets: %v", err)
+		}
 
-		for {
-			idStr := fmt.Sprintf("%v", lastId-1)
-			if idStr == vals.Get("max_id") {
-				log.Warningf(ctx, "same last id: %v", idStr)
-				break
-			}
-			if lastId != 0 {
-				vals.Set("max_id", idStr)
-			}
-			aTweets, err := twitterApi.GetUserTimeline(vals)
-			if err != nil {
-				return fmt.Errorf("Error getting tweets: %v", err)
-			}
+		log.Infof(ctx, "Got tweets, %v", len(aTweets))
+		if len(aTweets) == 0 {
+			break
+		} else {
+			for _, tweet := range aTweets {
+				if lastId == 0 || tweet.Id < lastId {
+					lastId = tweet.Id
+				}
 
-			log.Infof(ctx, "Got tweets, %v", len(aTweets))
-			if len(aTweets) == 0 {
-				break
-			} else {
-				for _, tweet := range aTweets {
-					if lastId == 0 || tweet.Id < lastId {
-						lastId = tweet.Id
-					}
-
-					time := parseTimestamp(tweet.CreatedAt, SEARCH_TIME_FORMAT)
-					if tweet.RetweetedStatus != nil && time.Unix() < before {
-						tweets = append(tweets, tweet)
-					}
+				time := parseTimestamp(tweet.CreatedAt, SEARCH_TIME_FORMAT)
+				if tweet.RetweetedStatus != nil && time.Unix() < before {
+					tweets = append(tweets, tweet)
 				}
 			}
 		}
-
-		log.Infof(ctx, "tweets to unretweet: %v", len(tweets))
-		for _, tweet := range tweets {
-			_, err := twitterApi.UnRetweet(tweet.Id, true)
-			if err != nil {
-				log.Errorf(ctx, "Error unretweeting: %v", err)
-			}
-		}
-
-		w.WriteHeader(http.StatusOK)
-	} else {
-		log.Warningf(ctx, "unauthorized attempt to access cron /unretweet")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+
+	log.Infof(ctx, "tweets to unretweet: %v", len(tweets))
+	for _, tweet := range tweets {
+		_, err := twitterApi.UnRetweet(tweet.Id, true)
+		if err != nil {
+			log.Errorf(ctx, "Error unretweeting: %v", err)
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
 	return nil
 }
 
 func updateUserHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	isCron := r.Header.Get("X-Appengine-Cron")
-
-	if isCron == "true" {
-		_, err := fetchAndStoreUser(ctx)
-		if err != nil {
-			return fmt.Errorf("Error fetching and storing user: %v", err)
-		}
-		w.WriteHeader(http.StatusOK)
-	} else {
-		log.Warningf(ctx, "unauthorized attempt to access cron /update/user")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	_, err := fetchAndStoreUser(ctx)
+	if err != nil {
+		return fmt.Errorf("Error fetching and storing user: %v", err)
 	}
+	w.WriteHeader(http.StatusOK)
 	return nil
 }
 
 func updateTweetsHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	isCron := r.Header.Get("X-Appengine-Cron")
-
-	if isCron == "true" {
-		if err := updateDatastoreTweets(ctx); err != nil {
-			return fmt.Errorf("Error updating db tweets: %v", err)
-		}
-		w.WriteHeader(http.StatusOK)
-	} else {
-		log.Warningf(ctx, "unauthorized attempt to access cron /update/tweets")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	if err := updateDatastoreTweets(ctx); err != nil {
+		return fmt.Errorf("Error updating db tweets: %v", err)
 	}
+	w.WriteHeader(http.StatusOK)
 	return nil
 }
 
 func fetchTweetsHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	isCron := r.Header.Get("X-Appengine-Cron")
-
-	if isCron == "true" {
-		_, err := fetchAndStoreTweets(ctx)
-		if err != nil {
-			return fmt.Errorf("Error fetching and storing tweets: %v", err)
-		}
-		w.WriteHeader(http.StatusOK)
-	} else {
-		log.Warningf(ctx, "unauthorized attempt to access cron /fetch")
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	_, err := fetchAndStoreTweets(ctx)
+	if err != nil {
+		return fmt.Errorf("Error fetching and storing tweets: %v", err)
 	}
+	w.WriteHeader(http.StatusOK)
 	return nil
 }
 
