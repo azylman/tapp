@@ -1,33 +1,34 @@
 package tapp
 
 import (
-	"fmt"
-	"time"
-	"math"
-	"strings"
-	"regexp"
-	"context"
-	"path"
+	"archive/zip"
 	"bytes"
+	"context"
+	"encoding/csv"
+	"encoding/json"
+	"encoding/xml"
+	"fmt"
+	"html/template"
+	"math"
 	"net/http"
 	"net/url"
+	"path"
+	"regexp"
 	"strconv"
-	"html/template"
-	"encoding/json"
-	"encoding/csv"
-	"encoding/xml"
-	"archive/zip"
+	"strings"
+	"time"
+
+	"github.com/ChimeraCoder/anaconda"
 	"google.golang.org/appengine"
-	"google.golang.org/appengine/urlfetch"
+	"google.golang.org/appengine/datastore"
 	"google.golang.org/appengine/log"
 	"google.golang.org/appengine/memcache"
-	"google.golang.org/appengine/datastore"
-	"github.com/ChimeraCoder/anaconda"
+	"google.golang.org/appengine/urlfetch"
 )
 
 var (
 	TwitterApi *anaconda.TwitterApi
-	MyToken Credentials
+	MyToken    Credentials
 )
 
 func init() {
@@ -81,13 +82,13 @@ func feedHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	type XmlTweet struct {
 		XMLName xml.Name `xml:"entry"`
-		Title string `xml:"title"`
-		Link Link `xml:"link"`
-		Id string `xml:"id"`
-		Updated string `xml:"updated"`
-		Summary string `xml:"summary"`
-		Content string `xml:"content"`
-		Author string `xml:"author>name"`
+		Title   string   `xml:"title"`
+		Link    Link     `xml:"link"`
+		Id      string   `xml:"id"`
+		Updated string   `xml:"updated"`
+		Summary string   `xml:"summary"`
+		Content string   `xml:"content"`
+		Author  string   `xml:"author>name"`
 	}
 
 	var user *User
@@ -109,14 +110,14 @@ func feedHandler(w http.ResponseWriter, r *http.Request) {
 	for i, tweet := range tweets {
 		t := time.Unix(tweet.Created, 0)
 		xmlTweets[i] = XmlTweet{
-			Title: t.Format(FEED_HEADER_FORMAT) + " Tweet",
-			Link: Link{tweet.Url, "alternate"},
-			Id: tweet.IdStr,
+			Title:   t.Format(FEED_HEADER_FORMAT) + " Tweet",
+			Link:    Link{tweet.Url, "alternate"},
+			Id:      tweet.IdStr,
 			Updated: t.Format(XML_ATOM_TIME_FORMAT),
 			Summary: tweet.Text[:min(len(tweet.Text), SUMMARY_LENGTH)],
 			//Content: "<![CDATA[ " + strings.Replace(tweet.Text, "\n", "\n<br/>", -1) + " ]]>",
 			Content: "<![CDATA[ " + tweet.Text + " ]]>",
-			Author: "@" + user.ScreenName,
+			Author:  "@" + user.ScreenName,
 		}
 	}
 
@@ -127,26 +128,26 @@ func feedHandler(w http.ResponseWriter, r *http.Request) {
 
 	encoder.Indent("", "  ")
 	encoder.Encode(struct {
-		XMLName xml.Name `xml:"feed"`
-		Xmlns string `xml:"xmlns,attr"`
-		Title string `xml:"title"`
-		SubTitle string `xml:"subtitle"`
-		Link Link `xml:"link"`
-		Updated string `xml:"updated"`
-		Id string `xml:"id"`
-		Icon string `xml:"icon"`
-		Logo string `xml:"logo"`
-		Rights string `xml:"rights"`
+		XMLName   xml.Name `xml:"feed"`
+		Xmlns     string   `xml:"xmlns,attr"`
+		Title     string   `xml:"title"`
+		SubTitle  string   `xml:"subtitle"`
+		Link      Link     `xml:"link"`
+		Updated   string   `xml:"updated"`
+		Id        string   `xml:"id"`
+		Icon      string   `xml:"icon"`
+		Logo      string   `xml:"logo"`
+		Rights    string   `xml:"rights"`
 		XmlTweets []XmlTweet
-	} {
-		Xmlns: "http://www.w3.org/2005/Atom",
-		Title: "@" + user.ScreenName + " Latest Tweets Feed",
-		Link: Link{url, "self"},
-		Updated: time.Unix(last.Updated, 0).Format(XML_ATOM_TIME_FORMAT),
-		Id: url,
-		Icon: user.ProfileImageUrlHttps,
-		Logo: user.ProfileImageUrlHttps,
-		Rights: "© " + year + " "+ user.ScreenName,
+	}{
+		Xmlns:     "http://www.w3.org/2005/Atom",
+		Title:     "@" + user.ScreenName + " Latest Tweets Feed",
+		Link:      Link{url, "self"},
+		Updated:   time.Unix(last.Updated, 0).Format(XML_ATOM_TIME_FORMAT),
+		Id:        url,
+		Icon:      user.ProfileImageUrlHttps,
+		Logo:      user.ProfileImageUrlHttps,
+		Rights:    "© " + year + " " + user.ScreenName,
 		XmlTweets: xmlTweets,
 	})
 	encoder.Flush()
@@ -207,7 +208,7 @@ func archiveExportHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.Header().Set("content-disposition", "attachment; filename=\"" + user.ScreenName + "-archive.zip\"")
+	w.Header().Set("content-disposition", "attachment; filename=\""+user.ScreenName+"-archive.zip\"")
 
 	zipWriter := zip.NewWriter(w)
 	fileWriter, err := zipWriter.Create("tweets.csv")
@@ -275,13 +276,13 @@ func archiveImportHandler(w http.ResponseWriter, r *http.Request) {
 			} else {
 				id, _ := strconv.Atoi(row["tweet_id"])
 				tweets = append(tweets, MyTweet{
-					Id: int64(id),
-					IdStr: row["tweet_id"],
+					Id:      int64(id),
+					IdStr:   row["tweet_id"],
 					Created: parseTimestamp(row["timestamp"], ARCHIVE_TIME_FORMAT).Unix(),
 					Updated: time.Now().Unix(),
-					Url: TWITTER_URL + MyToken.ScreenName + "/status/" + row["tweet_id"],
+					Url:     TWITTER_URL + MyToken.ScreenName + "/status/" + row["tweet_id"],
 					Deleted: false,
-					Media: nil,
+					Media:   nil,
 				})
 			}
 		}
@@ -335,7 +336,7 @@ func tweetsHandler(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
 	var (
 		tweets []MyTweet
-		err error
+		err    error
 	)
 
 	i, _ := strconv.Atoi(params.Get("page"))
@@ -429,11 +430,11 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	var temp *template.Template
 	temp, err = template.ParseFiles(page)
 	mainPage := struct {
-		User *User
-		GaKey string
+		User     *User
+		GaKey    string
 		HasGaKey bool
-	} {
-		User: user,
+	}{
+		User:  user,
 		GaKey: MyToken.GaKey,
 		// disable if localhost or no ga key supplied in credentials
 		HasGaKey: MyToken.GaKey != "" && isLocalhost(r.RemoteAddr) == false,
@@ -462,18 +463,18 @@ func unretweetHanlder(w http.ResponseWriter, r *http.Request) {
 		twitterApi.HttpClient.Transport = &urlfetch.Transport{Context: ctx}
 		tweets := []anaconda.Tweet{}
 		vals := url.Values{
-			"screen_name": {myToken.ScreenName},
-			"count": {"200"},
-			"trim_user": {"1"},
+			"screen_name":     {myToken.ScreenName},
+			"count":           {"200"},
+			"trim_user":       {"1"},
 			"exclude_replies": {"1"},
-			"include_rts": {"1"},
+			"include_rts":     {"1"},
 		}
 		lastId := int64(0)
 		before := time.Now().Unix() - (DAYS_BEFORE_UNRETWEET * SECONDS_IN_DAY)
 		log.Infof(ctx, "unretweet tweets before: %v", time.Unix(before, 0))
 
 		for {
-			idStr := fmt.Sprintf("%v", lastId - 1)
+			idStr := fmt.Sprintf("%v", lastId-1)
 			if idStr == vals.Get("max_id") {
 				log.Warningf(ctx, "same last id: %v", idStr)
 				break
@@ -575,7 +576,7 @@ func fetchTweetsHandler(w http.ResponseWriter, r *http.Request) {
 
 func getUser(ctx context.Context) (*User, error) {
 	var cached *User
-	_, err := memcache.JSON.Get(ctx, MEMCACHE_USER_KEY + MyToken.ScreenName, &cached)
+	_, err := memcache.JSON.Get(ctx, MEMCACHE_USER_KEY+MyToken.ScreenName, &cached)
 	if err != nil {
 		log.Errorf(ctx, "failed to fetch user from memcache: %v", err)
 	}
@@ -604,23 +605,23 @@ func fetchAndStoreUser(ctx context.Context) (*User, error) {
 	}
 
 	user := &User{
-		ScreenName: anacondaUser.ScreenName,
-		Id: anacondaUser.Id,
-		Name: anacondaUser.Name,
+		ScreenName:           anacondaUser.ScreenName,
+		Id:                   anacondaUser.Id,
+		Name:                 anacondaUser.Name,
 		ProfileImageUrlHttps: anacondaUser.ProfileImageUrlHttps,
-		Url: TWITTER_URL + anacondaUser.ScreenName,
-		Updated: time.Now().Unix(),
-		Description: anacondaUser.Description,
-		Followers: anacondaUser.FollowersCount,
-		Following: anacondaUser.FriendsCount,
-		TweetCount: anacondaUser.StatusesCount,
-		Location: anacondaUser.Location,
-		Verified: anacondaUser.Verified,
-		Link: anacondaUser.URL,
+		Url:                  TWITTER_URL + anacondaUser.ScreenName,
+		Updated:              time.Now().Unix(),
+		Description:          anacondaUser.Description,
+		Followers:            anacondaUser.FollowersCount,
+		Following:            anacondaUser.FriendsCount,
+		TweetCount:           anacondaUser.StatusesCount,
+		Location:             anacondaUser.Location,
+		Verified:             anacondaUser.Verified,
+		Link:                 anacondaUser.URL,
 	}
 
 	store := &memcache.Item{
-		Key: MEMCACHE_USER_KEY + MyToken.ScreenName,
+		Key:    MEMCACHE_USER_KEY + MyToken.ScreenName,
 		Object: *user,
 	}
 	memcache.JSON.Set(ctx, store)
@@ -636,7 +637,7 @@ func fetchAndStoreUser(ctx context.Context) (*User, error) {
 func getSearchTweets(ctx context.Context, page int, search string, order string) ([]MyTweet, error) {
 	var (
 		tweets []MyTweet
-		err error
+		err    error
 	)
 
 	search = RemovePunctuation(strings.TrimSpace(search), false)
@@ -662,7 +663,7 @@ func getSearchTweets(ctx context.Context, page int, search string, order string)
 			if length > 0 {
 				num := page * TWEETS_TO_FETCH
 				if num < length {
-					return tweets[num : min(num + TWEETS_TO_FETCH, length)], nil
+					return tweets[num:min(num+TWEETS_TO_FETCH, length)], nil
 				}
 				return nil, nil
 			}
@@ -676,7 +677,7 @@ func getSearchTweets(ctx context.Context, page int, search string, order string)
 func getLatestTweets(ctx context.Context, page int) ([]MyTweet, error) {
 	var (
 		tweets []MyTweet
-		err error
+		err    error
 	)
 
 	query := datastore.NewQuery("MyTweet").
@@ -698,7 +699,7 @@ func getLatestTweets(ctx context.Context, page int) ([]MyTweet, error) {
 func getBestTweets(ctx context.Context, page int) ([]MyTweet, error) {
 	var (
 		tweets []MyTweet
-		err error
+		err    error
 	)
 
 	query := datastore.NewQuery("MyTweet").
@@ -772,12 +773,12 @@ func checkTweets(ctx context.Context, tweets []MyTweet) ([]MyTweet, error) {
 	out := []MyTweet{}
 	ids := []int64{}
 	vals := url.Values{
-		"trim_user": {"1"},
+		"trim_user":        {"1"},
 		"include_entities": {"1"},
 	}
 
-	toCheck := tweets[: min(MAX_API_LOOKUP_SIZE, len(tweets))]
-	rest := tweets[min(MAX_API_LOOKUP_SIZE, len(tweets)) :]
+	toCheck := tweets[:min(MAX_API_LOOKUP_SIZE, len(tweets))]
+	rest := tweets[min(MAX_API_LOOKUP_SIZE, len(tweets)):]
 
 	for _, t := range toCheck {
 		ids = append(ids, t.Id)
@@ -792,7 +793,7 @@ func checkTweets(ctx context.Context, tweets []MyTweet) ([]MyTweet, error) {
 	for _, t := range toCheck {
 		var (
 			aTweet anaconda.Tweet
-			found bool = false
+			found  bool = false
 		)
 		for _, aTweet = range aTweets {
 			if aTweet.Id == t.Id {
@@ -853,7 +854,7 @@ func storeTweets(ctx context.Context, tweets []MyTweet) error {
 
 	length := len(keys)
 	for i := 0; i < length; i += MAX_PUT_SIZE {
-		max := min(i + MAX_PUT_SIZE, length)
+		max := min(i+MAX_PUT_SIZE, length)
 		slicedKeys := keys[i:max]
 		slicedTweets := tweets[i:max]
 		newKeys, err := datastore.PutMulti(ctx, slicedKeys, slicedTweets)
@@ -881,14 +882,14 @@ func fetchTweets(ctx context.Context, tweets []MyTweet, lastId int64, latestId i
 	TwitterApi.HttpClient.Transport = &urlfetch.Transport{Context: ctx}
 	log.Infof(ctx, "Fetching Tweets (lastId): %v, (latestId): %v", lastId, latestId)
 	vals := url.Values{
-		"screen_name": {MyToken.ScreenName},
-		"count": {"200"},
-		"trim_user": {"1"},
+		"screen_name":     {MyToken.ScreenName},
+		"count":           {"200"},
+		"trim_user":       {"1"},
 		"exclude_replies": {"1"},
-		"include_rts": {"0"},
+		"include_rts":     {"0"},
 	}
 	if lastId > 0 {
-		vals.Add("max_id", fmt.Sprintf("%v", lastId - 1))
+		vals.Add("max_id", fmt.Sprintf("%v", lastId-1))
 	}
 	if latestId > 0 {
 		vals.Add("since_id", fmt.Sprintf("%v", latestId))
@@ -920,17 +921,17 @@ func processTweets(tweets []anaconda.Tweet) ([]MyTweet, int64) {
 		}
 		if testTweet(tweet) {
 			myTweet := MyTweet{
-				Ratio: getRatio(tweet.FavoriteCount, tweet.RetweetCount),
-				IdStr: tweet.IdStr,
-				Faves: tweet.FavoriteCount,
-				Rts: tweet.RetweetCount,
-				Id: tweet.Id,
+				Ratio:   getRatio(tweet.FavoriteCount, tweet.RetweetCount),
+				IdStr:   tweet.IdStr,
+				Faves:   tweet.FavoriteCount,
+				Rts:     tweet.RetweetCount,
+				Id:      tweet.Id,
 				Created: parseTimestamp(tweet.CreatedAt, SEARCH_TIME_FORMAT).Unix(),
 				Updated: time.Now().Unix(),
-				Text: tweet.FullText,
-				Url: TWITTER_URL + MyToken.ScreenName + "/status/" + tweet.IdStr,
+				Text:    tweet.FullText,
+				Url:     TWITTER_URL + MyToken.ScreenName + "/status/" + tweet.IdStr,
 				Deleted: false,
-				Media: getMedia(&tweet),
+				Media:   getMedia(&tweet),
 			}
 
 			out = append(out, myTweet)
@@ -945,11 +946,11 @@ func getMedia(tweet *anaconda.Tweet) (media []Media) {
 		//Has media entities...
 		for _, ent := range tweet.Entities.Media {
 			media = append(media, Media{
-				Type: ent.Type,
-				IdStr: ent.Id_str,
-				Url: ent.Url,
+				Type:        ent.Type,
+				IdStr:       ent.Id_str,
+				Url:         ent.Url,
 				ExpandedUrl: ent.Expanded_url,
-				MediaUrl: ent.Media_url_https,
+				MediaUrl:    ent.Media_url_https,
 			})
 		}
 	}
@@ -980,16 +981,16 @@ func getTerms(search string) (terms [][]SearchTerm) {
 				quoted = quoted[1:]
 				reg, _ = regexp.Compile("(^| )" + strings.ToUpper(str) + "( |$)")
 				o = append(o, SearchTerm{
-					Text: str,
-					Upper: strings.ToUpper(str),
+					Text:   str,
+					Upper:  strings.ToUpper(str),
 					Quoted: true,
 					RegExp: reg,
 				})
 			} else if len(term) > MIN_SEARCH_LENGTH {
 				term = RemovePunctuation(term, true)
 				o = append(o, SearchTerm{
-					Text: term,
-					Upper: strings.ToUpper(term),
+					Text:   term,
+					Upper:  strings.ToUpper(term),
 					Quoted: false,
 					RegExp: nil,
 				})
