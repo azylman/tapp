@@ -31,49 +31,58 @@ var (
 	MyToken    Credentials
 )
 
+type appEngineHandler func(context.Context, http.ResponseWriter, *http.Request) error
+
+func appHandler(handler appEngineHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := appengine.NewContext(r)
+		if err := handler(ctx, w, r); err != nil {
+			log.Errorf(ctx, "Handler error: %v", err)
+			http.Error(w, "Error", http.StatusInternalServerError)
+		}
+	}
+}
+
 func init() {
 	// default pages
-	http.HandleFunc("/index.html", indexHandler)
-	http.HandleFunc("/index", indexHandler)
+	http.HandleFunc("/index.html", appHandler(indexHandler))
+	http.HandleFunc("/index", appHandler(indexHandler))
 	// handles all /.*
-	http.HandleFunc("/", indexOrErrorHandler)
+	http.HandleFunc("/", appHandler(indexOrErrorHandler))
 	// routes
-	http.HandleFunc("/latest", indexHandler)
-	http.HandleFunc("/best", indexHandler)
-	http.HandleFunc("/search", indexHandler)
-	http.HandleFunc("/error", indexHandler)
+	http.HandleFunc("/latest", appHandler(indexHandler))
+	http.HandleFunc("/best", appHandler(indexHandler))
+	http.HandleFunc("/search", appHandler(indexHandler))
+	http.HandleFunc("/error", appHandler(indexHandler))
 
 	// ajax calls
-	http.HandleFunc("/user", userHandler)
-	http.HandleFunc("/tweet", tweetHandler)
-	http.HandleFunc("/tweets/latest", tweetsHandler)
-	http.HandleFunc("/tweets/best", tweetsHandler)
-	http.HandleFunc("/tweets/search", tweetsHandler)
+	http.HandleFunc("/user", appHandler(userHandler))
+	http.HandleFunc("/tweet", appHandler(tweetHandler))
+	http.HandleFunc("/tweets/latest", appHandler(tweetsHandler))
+	http.HandleFunc("/tweets/best", appHandler(tweetsHandler))
+	http.HandleFunc("/tweets/search", appHandler(tweetsHandler))
 
 	// cron requests
-	http.HandleFunc("/fetch", fetchTweetsHandler)
-	http.HandleFunc("/update/tweets", updateTweetsHandler)
-	http.HandleFunc("/update/user", updateUserHandler)
-	http.HandleFunc("/unretweet", unretweetHanlder)
+	http.HandleFunc("/fetch", appHandler(fetchTweetsHandler))
+	http.HandleFunc("/update/tweets", appHandler(updateTweetsHandler))
+	http.HandleFunc("/update/user", appHandler(updateUserHandler))
+	http.HandleFunc("/unretweet", appHandler(unretweetHanlder))
 
 	// admin page requests
-	http.HandleFunc("/admin", indexHandler)
-	http.HandleFunc("/admin/archive/import", archiveImportHandler)
-	http.HandleFunc("/admin/archive/export", archiveExportHandler)
+	http.HandleFunc("/admin", appHandler(indexHandler))
+	http.HandleFunc("/admin/archive/import", appHandler(archiveImportHandler))
+	http.HandleFunc("/admin/archive/export", appHandler(archiveExportHandler))
 
 	// rss feed
-	http.HandleFunc("/feed/latest.xml", feedHandler)
+	http.HandleFunc("/feed/latest.xml", appHandler(feedHandler))
 
 	TwitterApi, MyToken = LoadCredentials(false)
 }
 
-func feedHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func feedHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	tweets, err := getLatestTweets(ctx, 0)
 	if err != nil {
-		log.Errorf(ctx, "Error getting latest tweets: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error getting latest tweets: %v", err)
 	}
 
 	type Link struct {
@@ -95,15 +104,11 @@ func feedHandler(w http.ResponseWriter, r *http.Request) {
 	var last *MyTweet
 	user, err = getUser(ctx)
 	if err != nil {
-		log.Errorf(ctx, "Error getting user: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error getting user: %v", err)
 	}
 	last, err = getLatestTweet(ctx)
 	if err != nil {
-		log.Errorf(ctx, "Error getting latest tweet: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error getting latest tweet: %v", err)
 	}
 
 	xmlTweets := make([]XmlTweet, len(tweets))
@@ -159,27 +164,22 @@ func feedHandler(w http.ResponseWriter, r *http.Request) {
 	b = bytes.Replace(b, []byte("&gt;"), []byte(">"), -1)
 	//w.Write(bytes.Replace(buf.Bytes(), []byte("&#xA;"), []byte("<br/>\n"), -1))
 	//w.Write(buf.Bytes())
-	w.Write(b)
+	_, err = w.Write(b)
+	return err
 }
 
-func archiveExportHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
-
+func archiveExportHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	query := datastore.NewQuery("MyTweet").Order("Created")
 	tweets := []MyTweet{}
 	_, err := query.GetAll(ctx, &tweets)
 
 	if err != nil {
-		log.Errorf(ctx, "Error fetching tweets: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error fetching tweets: %v", err)
 	}
 
 	user, err := getUser(ctx)
 	if err != nil {
-		log.Errorf(ctx, "Error fetching user: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error fetching user: %v", err)
 	}
 
 	// Add to csv file
@@ -213,40 +213,31 @@ func archiveExportHandler(w http.ResponseWriter, r *http.Request) {
 	zipWriter := zip.NewWriter(w)
 	fileWriter, err := zipWriter.Create("tweets.csv")
 	if err != nil {
-		log.Errorf(ctx, "Error creating zip: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error creating zip: %v", err)
 	}
 
 	writer := csv.NewWriter(fileWriter)
 	err = writer.Write(headers)
 	if err != nil {
-		log.Errorf(ctx, "Error writing headers: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error writing headers: %v", err)
 	}
 
 	err = writer.WriteAll(rows)
 	if err != nil {
-		log.Errorf(ctx, "Error writing rows: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error writing rows: %v", err)
 	}
 
 	writer.Flush()
 	zipWriter.Flush()
-	zipWriter.Close()
+	return zipWriter.Close()
 }
 
-func archiveImportHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func archiveImportHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	reader := csv.NewReader(r.Body)
 
 	records, err := reader.ReadAll()
 	if err != nil {
-		log.Errorf(ctx, "Error parsing csv file: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error parsing csv file: %v", err)
 	}
 	if len(records) > 0 {
 		headers := records[0]
@@ -290,49 +281,44 @@ func archiveImportHandler(w http.ResponseWriter, r *http.Request) {
 		log.Infof(ctx, "importable rows: %v", len(tweets))
 		tweets, err = checkTweets(ctx, tweets)
 		if err != nil {
-			log.Errorf(ctx, "Error checking tweets from csv file: %v", err)
-			http.Error(w, "Error", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("Error checking tweets from csv file: %v", err)
 		}
 		log.Infof(ctx, "checked tweets: %v. Storing...", len(tweets))
 
 		err = storeTweets(ctx, tweets)
 		if err != nil {
-			log.Errorf(ctx, "Error storing tweets from csv file: %v", err)
-			http.Error(w, "Error", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("Error storing tweets from csv file: %v", err)
 		}
 	}
 
 	w.WriteHeader(http.StatusOK)
+	return nil
 }
 
-func tweetHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func tweetHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	params := r.URL.Query()
 	id, _ := strconv.Atoi(params.Get("id"))
 
 	tweet := MyTweet{Id: int64(id)}
 	err := datastore.Get(ctx, tweet.GetKey(ctx), &tweet)
 	if err != nil {
+		// Error not returned because not a server error
 		log.Errorf(ctx, "Error getting tweet from datastore: %v", err)
 		http.Error(w, "Error", http.StatusNotFound)
-		return
+		return nil
 	}
 
 	var tweetJson []byte
 	tweetJson, err = json.Marshal(tweet)
 	if err != nil {
-		log.Errorf(ctx, "Error marshaling json for tweet: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error marshaling json for tweet: %v", err)
 	}
 
-	w.Write(tweetJson)
+	_, err = w.Write(tweetJson)
+	return err
 }
 
-func tweetsHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func tweetsHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	params := r.URL.Query()
 	var (
 		tweets []MyTweet
@@ -351,74 +337,60 @@ func tweetsHandler(w http.ResponseWriter, r *http.Request) {
 	default:
 		log.Errorf(ctx, "Error invalid tweet type: %v", which)
 		http.Error(w, "Error", http.StatusNotFound)
-		return
+		return nil
 	}
 
 	if err != nil {
-		log.Errorf(ctx, "Error getting %v tweets: %v", which, err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error getting %v tweets: %v", which, err)
 	}
 
 	var tweetJson []byte
 	tweetJson, err = json.Marshal(tweets)
 	if err != nil {
-		log.Errorf(ctx, "Error marshaling json for tweets: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error marshaling json for tweets: %v", err)
 	}
 
-	w.Write(tweetJson)
+	_, err = w.Write(tweetJson)
+	return err
 }
 
-func userHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func userHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	user, err := getUser(ctx)
 
 	if err != nil {
-		log.Errorf(ctx, "Error getting user: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error getting user: %v", err)
 	}
 
 	var userJson []byte
 	userJson, err = json.Marshal(user)
 	if err != nil {
-		log.Errorf(ctx, "Error marshaling json for user: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error marshaling json for user: %v", err)
 	}
 
-	w.Write(userJson)
+	_, err = w.Write(userJson)
+	return err
 }
 
-func indexOrErrorHandler(w http.ResponseWriter, r *http.Request) {
+func indexOrErrorHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	name := path.Clean(r.URL.Path)
-	ctx := appengine.NewContext(r)
-	if r.Method == "GET" {
-		reg, _ := regexp.Compile("/tweet/[0-9]+")
-		if name == "/" || reg.MatchString(name) {
-			indexHandler(w, r)
-		} else if name == "/favicon.ico" {
-			w.WriteHeader(http.StatusNotFound)
-		} else {
-			//TODO: make /error/404 or something...
-			http.Redirect(w, r, "/error", http.StatusMovedPermanently)
-		}
-	} else {
-		log.Errorf(ctx, "Error wrong method: %v", r.Method)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+	if r.Method != "GET" {
+		return fmt.Errorf("Error wrong method: %v", r.Method)
 	}
+	reg, _ := regexp.Compile("/tweet/[0-9]+")
+	if name == "/" || reg.MatchString(name) {
+		indexHandler(ctx, w, r)
+	} else if name == "/favicon.ico" {
+		w.WriteHeader(http.StatusNotFound)
+	}
+	//TODO: make /error/404 or something...
+	http.Redirect(w, r, "/error", http.StatusMovedPermanently)
+	return nil
 }
 
-func indexHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func indexHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	user, err := getUser(ctx)
 	if err != nil {
-		log.Errorf(ctx, "Error fetching user: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error fetching user: %v", err)
 	}
 
 	page := "html/main.html"
@@ -441,21 +413,16 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		log.Errorf(ctx, "Error parsing template: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("Error parsing template: %v", err)
 	}
 
-	err = temp.Execute(w, mainPage)
-	if err != nil {
-		log.Errorf(ctx, "Error executing template: %v", err)
-		http.Error(w, "Error", http.StatusInternalServerError)
-		return
+	if err := temp.Execute(w, mainPage); err != nil {
+		return fmt.Errorf("Error executing template: %v", err)
 	}
+	return nil
 }
 
-func unretweetHanlder(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func unretweetHanlder(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	isCron := r.Header.Get("X-Appengine-Cron")
 
 	if isCron == "true" {
@@ -484,9 +451,7 @@ func unretweetHanlder(w http.ResponseWriter, r *http.Request) {
 			}
 			aTweets, err := twitterApi.GetUserTimeline(vals)
 			if err != nil {
-				log.Errorf(ctx, "Error getting tweets: %v", err)
-				http.Error(w, "Error", http.StatusInternalServerError)
-				return
+				return fmt.Errorf("Error getting tweets: %v", err)
 			}
 
 			log.Infof(ctx, "Got tweets, %v", len(aTweets))
@@ -519,59 +484,54 @@ func unretweetHanlder(w http.ResponseWriter, r *http.Request) {
 		log.Warningf(ctx, "unauthorized attempt to access cron /unretweet")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+	return nil
 }
 
-func updateUserHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func updateUserHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	isCron := r.Header.Get("X-Appengine-Cron")
 
 	if isCron == "true" {
 		_, err := fetchAndStoreUser(ctx)
 		if err != nil {
-			log.Errorf(ctx, "Error fetching and storing user", err)
-			http.Error(w, "Error", http.StatusInternalServerError)
-		} else {
-			w.WriteHeader(http.StatusOK)
+			return fmt.Errorf("Error fetching and storing user: %v", err)
 		}
+		w.WriteHeader(http.StatusOK)
 	} else {
 		log.Warningf(ctx, "unauthorized attempt to access cron /update/user")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+	return nil
 }
 
-func updateTweetsHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func updateTweetsHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	isCron := r.Header.Get("X-Appengine-Cron")
 
 	if isCron == "true" {
 		if err := updateDatastoreTweets(ctx); err != nil {
-			log.Errorf(ctx, "Error updating db tweets: %v", err)
-			http.Error(w, "Error", http.StatusInternalServerError)
-		} else {
-			w.WriteHeader(http.StatusOK)
+			return fmt.Errorf("Error updating db tweets: %v", err)
 		}
+		w.WriteHeader(http.StatusOK)
 	} else {
 		log.Warningf(ctx, "unauthorized attempt to access cron /update/tweets")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+	return nil
 }
 
-func fetchTweetsHandler(w http.ResponseWriter, r *http.Request) {
-	ctx := appengine.NewContext(r)
+func fetchTweetsHandler(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
 	isCron := r.Header.Get("X-Appengine-Cron")
 
 	if isCron == "true" {
 		_, err := fetchAndStoreTweets(ctx)
 		if err != nil {
-			log.Errorf(ctx, "Error fetching and storing tweets", err)
-			http.Error(w, "Error", http.StatusInternalServerError)
-		} else {
-			w.WriteHeader(http.StatusOK)
+			return fmt.Errorf("Error fetching and storing tweets: %v", err)
 		}
+		w.WriteHeader(http.StatusOK)
 	} else {
 		log.Warningf(ctx, "unauthorized attempt to access cron /fetch")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 	}
+	return nil
 }
 
 func getUser(ctx context.Context) (*User, error) {
